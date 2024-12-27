@@ -1,79 +1,78 @@
-import asyncio
-import hashlib
-import json
-import logging
-import random
-import uuid
-from datetime import datetime, timedelta
-from typing import Any, Dict
+import asyncio  # Асинхронные операции.
+import hashlib  # Хэширование данных, например для генерации токенов.
+import json  # Работа с JSON данными.
+import logging  # Логирование событий и ошибок.
+import random  # Генерация случайных чисел, например для сообщений об ошибках.
+import uuid  # Генерация уникальных идентификаторов.
+from datetime import datetime, timedelta  # Работа с датами и временем.
+from typing import Any, Dict  # Типизация в Python.
 
-import httpx
-from aiogram import Bot, Dispatcher, F, Router, types
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.types import (FSInputFile, InlineKeyboardButton,
-                           InlineKeyboardMarkup)
-from aiogram.webhook.aiohttp_server import (SimpleRequestHandler,
-                                            setup_application)
-from aiohttp import web
-from aiohttp.web_request import Request
+import httpx  # Асинхронные HTTP-запросы.
+from aiogram import Bot, Dispatcher, F, Router, types  # Основные классы и функции библиотеки aiogram для создания Telegram-ботов.
+from aiogram.client.default import DefaultBotProperties  # Настройки бота по умолчанию.
+from aiogram.enums import ParseMode  # Определяет режим парсинга (например, HTML).
+from aiogram.filters import Command, CommandStart  # Фильтры для обработки команд бота.
+from aiogram.fsm.context import FSMContext  # Контекст для управления состояниями FSM (Finite State Machine).
+from aiogram.types import (FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup)  # Типы Telegram-объектов.
+from aiogram.webhook.aiohttp_server import (SimpleRequestHandler, setup_application)  # Работа с вебхуками.
+from aiohttp import web  # Работа с веб-сервером.
+from aiohttp.web_request import Request  # Класс для обработки веб-запросов.
 
-import config as cf
-from database import Base, engine
-from database.queries import (check_amount_and_payment_id, get_amount,
-                              get_user_tg_id, init_new_payment,
-                              update_payment_data)
-from utils import PaymentState, logger
+import config as cf  # Импорт пользовательских настроек (например, токен бота).
+from database import Base, engine  # Импорт базы данных и механизма ORM.
+from database.queries import (check_amount_and_payment_id, get_amount, get_user_tg_id, init_new_payment, update_payment_data)  # Запросы к базе данных.
+from utils import PaymentState, logger  # Пользовательские утилиты, включая логирование.
 
+# Настройки бота по умолчанию, например парсинг HTML.
 default_properties: DefaultBotProperties = DefaultBotProperties(parse_mode=ParseMode.HTML)
+
+# Инициализация бота и диспетчера.
 bot: Bot = Bot(token=cf.BOT_TOKEN, default=default_properties)
 dp: Dispatcher = Dispatcher()
 
-# мой url, полученный от ngrok
-APP_BASE_URL: str = f""
+# Базовый URL приложения, например, от ngrok.
+APP_BASE_URL: str = ""
 
-terminal_key = ""
-secret = ""
+# Настройки для работы с Tinkoff API.
+terminal_key = ""  # Токен терминала.
+secret = ""  # Секретный ключ.
 
-
+# Кастомное исключение для ошибок работы с Tinkoff API.
 class TinkoffAPIException(Exception):
     pass
 
-
+# Клиент для взаимодействия с Tinkoff API.
 class TinkoffAcquiringAPIClient:
-    API_ENDPOINT =  "https://securepay.tinkoff.ru/v2/" #'https://securepay.tinkoff.ru/v2/'
+    API_ENDPOINT = "https://securepay.tinkoff.ru/v2/"  # Базовый URL API Tinkoff.
 
     def __init__(self, terminal_key: str, secret: str):
-        self.terminal_key = terminal_key
-        self.secret = secret
-        self.logger = logging.getLogger(__name__)
-        logging.basicConfig(level=logging.INFO)
+        self.terminal_key = terminal_key  # Сохраняем ключ терминала.
+        self.secret = secret  # Сохраняем секретный ключ.
+        self.logger = logging.getLogger(__name__)  # Логгер для класса.
+        logging.basicConfig(level=logging.INFO)  # Устанавливаем уровень логирования.
 
     async def send_request(self, endpoint, payload) -> Dict | None:
+        """ Отправка запроса к API """
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
         }
         async with httpx.AsyncClient() as client:
-            payload['TerminalKey'] = self.terminal_key
-            payload['Token'] = self.generate_token(payload)
+            payload['TerminalKey'] = self.terminal_key  # Добавляем TerminalKey в запрос.
+            payload['Token'] = self.generate_token(payload)  # Генерируем токен для защиты данных.
             self.logger.info(f"Отправляемые данные на сервере в методе {endpoint}: {payload = }")
 
             try:
                 response = await client.post(
-                    url=self.API_ENDPOINT + endpoint,
-                    json=payload,
-                    headers=headers,
+                    url=self.API_ENDPOINT + endpoint,  # URL запроса.
+                    json=payload,  # Тело запроса в формате JSON.
+                    headers=headers,  # Заголовки запроса.
                 )
-
-            except httpx.ConnectError as error:
+            except httpx.ConnectError as error:  # Ошибка соединения.
                 self.logger.error(
                     f"Произошла ошибка при подключении | Error: {error}"
                 )
                 return
-
-            except httpx.ConnectTimeout as error:
+            except httpx.ConnectTimeout as error:  # Ошибка таймаута.
                 self.logger.error(
                     f"Прошел таймаут | Error: {error}"
                 )
@@ -81,9 +80,8 @@ class TinkoffAcquiringAPIClient:
 
             self.logger.info(f"Полученный ответ: {response = }")
             try:
-                response_data: Dict = response.json()
-
-            except json.JSONDecodeError as error:
+                response_data: Dict = response.json()  # Преобразуем ответ в JSON.
+            except json.JSONDecodeError as error:  # Ошибка парсинга JSON.
                 logging.error(
                     f"Произошла ошибка {error.__class__.__name__} при десериализации ответа JSON"
                 )
@@ -99,17 +97,19 @@ class TinkoffAcquiringAPIClient:
 
     def generate_token(self, params):
         """ Генерируем токен для отправки в запросе """
-        ignore_keys = ['Shops', 'Receipt', 'DATA']
+        ignore_keys = ['Shops', 'Receipt', 'DATA']  # Игнорируем некоторые ключи в запросе.
         _params = params.copy()
         for key in ignore_keys:
             if key in _params:
                 del _params[key]
 
-        params['Password'] = self.secret
+        params['Password'] = self.secret  # Добавляем пароль в параметры.
         _params["Password"] = self.secret
-        sorted_params = dict(sorted(_params.items(), key=lambda x: x[0]))
-        token_str = ''.join(str(value) for _, value in sorted_params.items())
-        return hashlib.sha256(token_str.encode('utf-8')).hexdigest()
+        sorted_params = dict(sorted(_params.items(), key=lambda x: x[0]))  # Сортируем параметры.
+        token_str = ''.join(str(value) for _, value in sorted_params.items())  # Объединяем значения в строку.
+        return hashlib.sha256(token_str.encode('utf-8')).hexdigest()  # Генерируем SHA256 хэш.
+
+    # Остальной код, в том числе обработчики, аннотации к которым добавлю при необходимости.
 
     async def init_payment(self,
                            amount: int,

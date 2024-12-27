@@ -3,6 +3,7 @@ import os
 from sqlalchemy.ext.asyncio import (AsyncEngine, AsyncSession,
                                     async_sessionmaker, create_async_engine)
 
+#Создание базы данных, где записывааются все платежи 
 db_path = os.path.join(
     os.path.dirname(os.path.abspath(__package__)),
     "database.sqlite3",
